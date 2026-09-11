@@ -1,0 +1,36 @@
+{
+  "general": {
+    "host": "localhost:8334",
+    "secret_key": "e2etestsecretkey",
+    "force_ssl": false,
+    "cookie_timeout": 480
+  },
+  "features": {
+    "share": {
+      "enable": false
+    },
+    "groupfolders": {
+      "root": "/mnt/files",
+      "rules": "shared: *\nteam-1: team-1\nteam-2: team-2\nprojects: team-1, team-2\nfinance: accounting"
+    }
+  },
+  "auth": {
+    "admin": "$2y$10$Shy0jJj67a.dgfu9I2bvy.9.F2BX0AIn70TVItNmrff61M/scMHjW"
+  },
+  "connections": [
+    {
+      "type": "groupfolders",
+      "label": "Files"
+    }
+  ],
+  "middleware": {
+    "identity_provider": {
+      "type": "oidc",
+      "params": "{\"issuer\":\"http://localhost:8080/default\",\"client_id\":\"filestash\",\"client_secret\":\"e2e-client-secret\",\"redirect_uri\":\"http://localhost:8334/api/session/auth/\"}"
+    },
+    "attribute_mapping": {
+      "related_backend": "Files",
+      "params": "{\"Files\":{\"type\":\"groupfolders\",\"user\":\"{{ .user }}\",\"password\":\"{{ .password }}\"}}"
+    }
+  }
+}

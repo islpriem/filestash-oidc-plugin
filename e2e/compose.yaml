@@ -1,0 +1,60 @@
+name: filestash-oidc-e2e
+
+# filestash and the test runner share the network namespace of the idp, so
+# the issuer and redirect URLs are the same for every party, including a
+# browser on the host.
+services:
+  idp:
+    image: ghcr.io/navikt/mock-oauth2-server:6.0.3
+    environment:
+      JSON_CONFIG_PATH: /idp.json
+    volumes:
+      - ./idp.json:/idp.json:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8334:8334"
+
+  seed:
+    image: filestash-oidc
+    build: ..
+    user: root
+    entrypoint: ["sh", "/seed.sh"]
+    volumes:
+      - ./seed.sh:/seed.sh:ro
+      - ./config.json:/seed/config.json:ro
+      - state:/app/data/state
+      - files:/mnt/files
+
+  filestash:
+    image: filestash-oidc
+    pull_policy: never
+    network_mode: service:idp
+    environment:
+      CONFIG_ENCRYPT: "false"
+    volumes:
+      - state:/app/data/state
+      - files:/mnt/files
+    depends_on:
+      idp:
+        condition: service_started
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8334/healthz"]
+      interval: 2s
+      retries: 30
+
+  e2e:
+    image: golang:1.26-trixie
+    network_mode: service:idp
+    working_dir: /src
+    command: ["go", "test", "-count=1", "-v", "./..."]
+    volumes:
+      - .:/src:ro
+    depends_on:
+      filestash:
+        condition: service_healthy
+
+volumes:
+  state:
+  files:

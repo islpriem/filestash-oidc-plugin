@@ -1,0 +1,35 @@
+{
+  "interactiveLogin": true,
+  "tokenCallbacks": [
+    {
+      "issuerId": "default",
+      "requestMappings": [
+        {
+          "requestParam": "subject",
+          "match": "alice",
+          "claims": { "sub": "alice", "preferred_username": "alice", "aud": ["${clientId}"], "groups": ["team-1"] }
+        },
+        {
+          "requestParam": "subject",
+          "match": "bob",
+          "claims": { "sub": "bob", "preferred_username": "bob", "aud": ["${clientId}"], "groups": ["team-2"] }
+        },
+        {
+          "requestParam": "subject",
+          "match": "carol",
+          "claims": { "sub": "carol", "preferred_username": "carol", "aud": ["${clientId}"], "groups": ["accounting"] }
+        },
+        {
+          "requestParam": "subject",
+          "match": "dave",
+          "claims": { "sub": "dave", "preferred_username": "dave", "aud": ["${clientId}"], "groups": [] }
+        },
+        {
+          "requestParam": "subject",
+          "match": "mallory",
+          "claims": { "sub": "mallory", "preferred_username": "mallory", "aud": ["${clientId}"], "groups": ["..", "team-1/../team-2", "TEAM-2", "hidden"] }
+        }
+      ]
+    }
+  ]
+}
