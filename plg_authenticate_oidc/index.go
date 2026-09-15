@@ -7,6 +7,14 @@ import (
 	"github.com/mickael-kerjean/filestash/server/pkg/env"
 )
 
+func init() {
+	Backend.Register("groupfolders", GroupFolders{})
+	Hooks.Register.Onload(func() {
+		folderRoot()
+		folderRules()
+	})
+}
+
 func seal(purpose string, v any) (string, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
