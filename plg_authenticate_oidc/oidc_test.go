@@ -188,3 +188,56 @@ func TestEntryPointUnreachableProvider(t *testing.T) {
 		t.Fatal("response was written")
 	}
 }
+
+func TestBindFlow(t *testing.T) {
+	Config.Get("middleware.identity_provider.type").Set("oidc")
+	for _, tc := range []struct {
+		name   string
+		method string
+		target string
+		cookie string
+		status int
+		flow   string
+	}{
+		{"callback", http.MethodGet, "/api/session/auth/?code=c&state=s", "sealed", 0, "sealed"},
+		{"callback without cookie", http.MethodGet, "/api/session/auth/?code=c&state=s&oidc_flow=forged", "", 0, ""},
+		{"callback with forged flow", http.MethodGet, "/api/session/auth/?code=c&oidc_flow=forged&oidc_flow=again", "sealed", 0, "sealed"},
+		{"posted callback", http.MethodPost, "/api/session/auth/?code=c&state=s", "sealed", http.StatusMethodNotAllowed, ""},
+		{"posted redirect", http.MethodPost, "/api/session/auth/?action=redirect&code=c", "sealed", http.StatusMethodNotAllowed, ""},
+		{"login start", http.MethodGet, "/api/session/auth/?action=redirect&label=Files", "sealed", 0, ""},
+		{"other route", http.MethodPost, "/api/session?oidc_flow=x", "sealed", 0, "x"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called, seen := false, ""
+			handler := bindFlow(func(ctx *App, res http.ResponseWriter, req *http.Request) {
+				called, seen = true, req.URL.Query().Get(flowCookie)
+			})
+			req := httptest.NewRequest(tc.method, tc.target, nil)
+			if tc.cookie != "" {
+				req.AddCookie(&http.Cookie{Name: flowCookie, Value: tc.cookie})
+			}
+			res := httptest.NewRecorder()
+			handler(&App{}, res, req)
+			if tc.status != 0 {
+				if called || res.Code != tc.status {
+					t.Fatalf("called=%v status=%d, want %d", called, res.Code, tc.status)
+				}
+				return
+			}
+			if !called || seen != tc.flow {
+				t.Fatalf("called=%v flow=%q, want %q", called, seen, tc.flow)
+			}
+		})
+	}
+}
+
+func TestBindFlowOnlyForOIDC(t *testing.T) {
+	Config.Get("middleware.identity_provider.type").Set("passthrough")
+	defer Config.Get("middleware.identity_provider.type").Set("oidc")
+	called := false
+	handler := bindFlow(func(ctx *App, res http.ResponseWriter, req *http.Request) { called = true })
+	handler(&App{}, httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/session/auth/", nil))
+	if !called {
+		t.Fatal("other authentication middlewares are blocked")
+	}
+}

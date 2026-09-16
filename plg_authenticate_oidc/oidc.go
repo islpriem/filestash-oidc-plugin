@@ -94,6 +94,32 @@ func (this OpenID) EntryPoint(idpParams map[string]string, req *http.Request, re
 	return nil
 }
 
+// bindFlow hands the flow cookie over to Callback, which doesn't get to see the
+// request. The parameter is always replaced so a link can't smuggle in a flow
+// started from another browser, and callbacks can't be posted since form
+// values would take precedence over the query.
+func bindFlow(fn HandlerFunc) HandlerFunc {
+	return HandlerFunc(func(ctx *App, res http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != WithBase("/api/session/auth/") ||
+			Config.Get("middleware.identity_provider.type").String() != "oidc" ||
+			(req.Method == http.MethodGet && req.URL.Query().Get("action") == "redirect") {
+			fn(ctx, res, req)
+			return
+		}
+		if req.Method != http.MethodGet {
+			SendErrorResult(res, ErrNotValid)
+			return
+		}
+		q := req.URL.Query()
+		q.Del(flowCookie)
+		if c, err := req.Cookie(flowCookie); err == nil {
+			q.Set(flowCookie, c.Value)
+		}
+		req.URL.RawQuery = q.Encode()
+		fn(ctx, res, req)
+	})
+}
+
 func (this OpenID) Callback(formData map[string]string, idpParams map[string]string, res http.ResponseWriter) (map[string]string, error) {
 	return nil, ErrNotImplemented
 }
