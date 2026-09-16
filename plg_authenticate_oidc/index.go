@@ -8,6 +8,7 @@ import (
 )
 
 func init() {
+	Hooks.Register.AuthenticationMiddleware("oidc", OpenID{})
 	Backend.Register("groupfolders", GroupFolders{})
 	Hooks.Register.Onload(func() {
 		folderRoot()
