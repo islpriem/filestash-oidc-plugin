@@ -4,7 +4,7 @@ COMPOSE = docker compose -f e2e/compose.yaml
 .PHONY: test image e2e e2e-up e2e-down
 
 test:
-	docker build --target test --progress=plain .
+	docker build --target test --no-cache-filter test --progress=plain .
 
 image:
 	docker build -t $(IMAGE) .
