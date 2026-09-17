@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/mickael-kerjean/filestash/server/common"
 
@@ -26,6 +28,9 @@ type idp struct {
 	key       *rsa.PrivateKey
 	challenge string
 	nonce     string
+	claims    map[string]any
+	signer    *rsa.PrivateKey
+	unsigned  bool
 }
 
 func newIDP(t *testing.T) *idp {
@@ -34,7 +39,7 @@ func newIDP(t *testing.T) *idp {
 	if err != nil {
 		t.Fatal(err)
 	}
-	i := &idp{key: key}
+	i := &idp{key: key, signer: key, claims: map[string]any{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{
@@ -50,9 +55,85 @@ func newIDP(t *testing.T) *idp {
 			{Key: &key.PublicKey, KeyID: "test", Algorithm: "RS256", Use: "sig"},
 		}})
 	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		user, password, _ := r.BasicAuth()
+		r.ParseForm()
+		w.Header().Set("Content-Type", "application/json")
+		if user != "filestash" || password != "secret" ||
+			r.PostForm.Get("grant_type") != "authorization_code" ||
+			r.PostForm.Get("code") != "valid-code" ||
+			r.PostForm.Get("redirect_uri") != redirectURI ||
+			s256(r.PostForm.Get("code_verifier")) != i.challenge {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"error":"invalid_grant"}`))
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "access",
+			"token_type":   "Bearer",
+			"id_token":     i.idToken(t),
+		})
+	})
 	i.Server = httptest.NewServer(mux)
 	t.Cleanup(i.Close)
 	return i
+}
+
+func (i *idp) idToken(t *testing.T) string {
+	now := time.Now().Unix()
+	claims := map[string]any{
+		"iss":                i.URL,
+		"aud":                "filestash",
+		"sub":                "8f1c2d",
+		"preferred_username": "alice",
+		"email":              "alice@example.com",
+		"groups":             []string{"team-1", "projects"},
+		"nonce":              i.nonce,
+		"iat":                now,
+		"exp":                now + 300,
+	}
+	for k, v := range i.claims {
+		if v == nil {
+			delete(claims, k)
+		} else {
+			claims[k] = v
+		}
+	}
+	payload, _ := json.Marshal(claims)
+	if i.unsigned {
+		enc := base64.RawURLEncoding
+		return enc.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`)) + "." + enc.EncodeToString(payload) + "."
+	}
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: i.signer},
+		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "test"),
+	)
+	if err != nil {
+		t.Error(err)
+		return ""
+	}
+	jws, err := signer.Sign(payload)
+	if err != nil {
+		t.Error(err)
+		return ""
+	}
+	token, _ := jws.CompactSerialize()
+	return token
+}
+
+// begin starts a login and returns what the browser brings back to the
+// callback once the user is authenticated.
+func (i *idp) begin(t *testing.T) map[string]string {
+	t.Helper()
+	location, cookie := entryPoint(t, i.params())
+	i.challenge = location.Query().Get("code_challenge")
+	i.nonce = location.Query().Get("nonce")
+	return map[string]string{
+		"code":     "valid-code",
+		"state":    location.Query().Get("state"),
+		"label":    "Files",
+		flowCookie: cookie.Value,
+	}
 }
 
 func (i *idp) params() map[string]string {
@@ -239,5 +320,123 @@ func TestBindFlowOnlyForOIDC(t *testing.T) {
 	handler(&App{}, httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/session/auth/", nil))
 	if !called {
 		t.Fatal("other authentication middlewares are blocked")
+	}
+}
+
+func TestCallback(t *testing.T) {
+	i := newIDP(t)
+	res := httptest.NewRecorder()
+	attrs, err := (OpenID{}).Callback(i.begin(t), i.params(), res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attrs["user"] != "alice" || attrs["email"] != "alice@example.com" || len(attrs) != 3 {
+		t.Fatalf("attributes: %v", attrs)
+	}
+	var g grant
+	if err := unseal(grantPurpose, attrs["password"], &g); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(g.Groups, []string{"team-1", "projects"}) {
+		t.Fatalf("groups: %v", g.Groups)
+	}
+	if expiry := time.Unix(g.Expiry, 0); expiry.Before(time.Now().Add(grantTTL-time.Minute)) || expiry.After(time.Now().Add(grantTTL)) {
+		t.Fatalf("expiry: %v", expiry)
+	}
+	cleared := false
+	for _, c := range res.Result().Cookies() {
+		cleared = cleared || (c.Name == flowCookie && c.MaxAge < 0)
+	}
+	if !cleared {
+		t.Fatal("flow cookie is not cleared")
+	}
+}
+
+func TestCallbackFallsBackToSubject(t *testing.T) {
+	i := newIDP(t)
+	i.claims["preferred_username"] = nil
+	attrs, err := (OpenID{}).Callback(i.begin(t), i.params(), httptest.NewRecorder())
+	if err != nil || attrs["user"] != "8f1c2d" {
+		t.Fatalf("user=%q err=%v", attrs["user"], err)
+	}
+}
+
+func TestCallbackWithoutGroups(t *testing.T) {
+	i := newIDP(t)
+	i.claims["groups"] = nil
+	attrs, err := (OpenID{}).Callback(i.begin(t), i.params(), httptest.NewRecorder())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var g grant
+	if err := unseal(grantPurpose, attrs["password"], &g); err != nil || len(g.Groups) != 0 {
+		t.Fatalf("groups=%v err=%v", g.Groups, err)
+	}
+}
+
+func TestCallbackRejects(t *testing.T) {
+	other, _ := rsa.GenerateKey(rand.Reader, 2048)
+	for name, tamper := range map[string]func(t *testing.T, i *idp, form, params map[string]string){
+		"provider error": func(t *testing.T, i *idp, form, params map[string]string) {
+			form["error"] = "access_denied"
+		},
+		"missing flow": func(t *testing.T, i *idp, form, params map[string]string) {
+			delete(form, flowCookie)
+		},
+		"tampered flow": func(t *testing.T, i *idp, form, params map[string]string) {
+			c := byte('A')
+			if form[flowCookie][10] == c {
+				c = 'B'
+			}
+			form[flowCookie] = form[flowCookie][:10] + string(c) + form[flowCookie][11:]
+		},
+		"state of another login": func(t *testing.T, i *idp, form, params map[string]string) {
+			challenge, nonce := i.challenge, i.nonce
+			form["state"] = i.begin(t)["state"]
+			i.challenge, i.nonce = challenge, nonce
+		},
+		"code of another login": func(t *testing.T, i *idp, form, params map[string]string) {
+			i.begin(t)
+		},
+		"unknown code": func(t *testing.T, i *idp, form, params map[string]string) {
+			form["code"] = "stolen-code"
+		},
+		"wrong client secret": func(t *testing.T, i *idp, form, params map[string]string) {
+			params["client_secret"] = "wrong"
+		},
+		"foreign signature": func(t *testing.T, i *idp, form, params map[string]string) {
+			i.signer = other
+		},
+		"unsigned token": func(t *testing.T, i *idp, form, params map[string]string) {
+			i.unsigned = true
+		},
+		"wrong issuer": func(t *testing.T, i *idp, form, params map[string]string) {
+			i.claims["iss"] = "https://evil.example.com"
+		},
+		"wrong audience": func(t *testing.T, i *idp, form, params map[string]string) {
+			i.claims["aud"] = "another-client"
+		},
+		"expired token": func(t *testing.T, i *idp, form, params map[string]string) {
+			i.claims["exp"] = time.Now().Add(-time.Minute).Unix()
+		},
+		"wrong nonce": func(t *testing.T, i *idp, form, params map[string]string) {
+			i.claims["nonce"] = "replayed"
+		},
+		"missing nonce": func(t *testing.T, i *idp, form, params map[string]string) {
+			i.claims["nonce"] = nil
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			i := newIDP(t)
+			form, params := i.begin(t), i.params()
+			tamper(t, i, form, params)
+			attrs, err := (OpenID{}).Callback(form, params, httptest.NewRecorder())
+			if err == nil || attrs != nil {
+				t.Fatalf("accepted: %v", attrs)
+			}
+			if err == ErrAuthenticationFailed {
+				t.Fatal("would restart the login in a loop")
+			}
+		})
 	}
 }

@@ -2,6 +2,7 @@ package plg_authenticate_oidc
 
 import (
 	"context"
+	"crypto/subtle"
 	"net/http"
 	"strings"
 	"time"
@@ -16,6 +17,8 @@ const (
 	flowCookie  = "oidc_flow"
 	flowPurpose = "OIDC_FLOW"
 )
+
+var errLogin = NewError("Could not sign in with the identity provider", 401)
 
 // flow is what has to survive the round trip to the identity provider. It
 // lives in a sealed cookie scoped to the callback.
@@ -120,8 +123,74 @@ func bindFlow(fn HandlerFunc) HandlerFunc {
 	})
 }
 
+// Callback never returns ErrAuthenticationFailed as filestash would send the
+// user straight back to the provider, which could loop forever.
 func (this OpenID) Callback(formData map[string]string, idpParams map[string]string, res http.ResponseWriter) (map[string]string, error) {
-	return nil, ErrNotImplemented
+	http.SetCookie(res, &http.Cookie{
+		Name:   flowCookie,
+		Value:  "",
+		Path:   WithBase("/api/session/auth/"),
+		MaxAge: -1,
+	})
+	if formData["error"] != "" {
+		Log.Warning("plg_authenticate_oidc::callback provider refused error=%s", formData["error"])
+		return nil, errLogin
+	}
+	var f flow
+	if err := unseal(flowPurpose, formData[flowCookie], &f); err != nil {
+		Log.Warning("plg_authenticate_oidc::callback msg=missing_or_invalid_flow")
+		return nil, errLogin
+	} else if subtle.ConstantTimeCompare([]byte(f.State), []byte(formData["state"])) != 1 {
+		Log.Warning("plg_authenticate_oidc::callback msg=state_mismatch")
+		return nil, errLogin
+	}
+
+	ctx, cancel := context.WithTimeout(oidc.ClientContext(context.Background(), HTTPClient()), 10*time.Second)
+	defer cancel()
+	provider, config, err := discover(ctx, idpParams)
+	if err != nil {
+		Log.Error("plg_authenticate_oidc::callback discovery err=%s", err.Error())
+		return nil, errLogin
+	}
+	token, err := config.Exchange(ctx, formData["code"], oauth2.VerifierOption(f.Verifier))
+	if err != nil {
+		Log.Warning("plg_authenticate_oidc::callback exchange err=%s", err.Error())
+		return nil, errLogin
+	}
+	rawIDToken, _ := token.Extra("id_token").(string)
+	idToken, err := provider.Verifier(&oidc.Config{ClientID: config.ClientID}).Verify(ctx, rawIDToken)
+	if err != nil {
+		Log.Warning("plg_authenticate_oidc::callback verify err=%s", err.Error())
+		return nil, errLogin
+	} else if subtle.ConstantTimeCompare([]byte(idToken.Nonce), []byte(f.Nonce)) != 1 {
+		Log.Warning("plg_authenticate_oidc::callback msg=nonce_mismatch")
+		return nil, errLogin
+	}
+	var claims struct {
+		Username string   `json:"preferred_username"`
+		Email    string   `json:"email"`
+		Groups   []string `json:"groups"`
+	}
+	if err := idToken.Claims(&claims); err != nil {
+		Log.Warning("plg_authenticate_oidc::callback claims err=%s", err.Error())
+		return nil, errLogin
+	}
+	password, err := seal(grantPurpose, grant{
+		Groups: claims.Groups,
+		Expiry: time.Now().Add(grantTTL).Unix(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	user := claims.Username
+	if user == "" {
+		user = idToken.Subject
+	}
+	return map[string]string{
+		"user":     user,
+		"email":    claims.Email,
+		"password": password,
+	}, nil
 }
 
 func discover(ctx context.Context, idpParams map[string]string) (*oidc.Provider, *oauth2.Config, error) {
