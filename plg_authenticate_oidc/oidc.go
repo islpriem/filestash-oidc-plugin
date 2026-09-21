@@ -133,7 +133,7 @@ func (this OpenID) Callback(formData map[string]string, idpParams map[string]str
 		MaxAge: -1,
 	})
 	if formData["error"] != "" {
-		Log.Warning("plg_authenticate_oidc::callback provider refused error=%s", formData["error"])
+		Log.Warning("plg_authenticate_oidc::callback provider refused error=%q", formData["error"])
 		return nil, errLogin
 	}
 	var f flow
