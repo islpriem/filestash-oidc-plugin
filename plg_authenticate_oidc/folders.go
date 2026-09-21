@@ -67,6 +67,22 @@ func (this GroupFolders) LoginForm() Form {
 	}
 }
 
+// Meta keeps the interface from offering changes to the root, which would be
+// refused anyway.
+func (this GroupFolders) Meta(p string) Metadata {
+	if !isRoot(p) {
+		return Metadata{}
+	}
+	return Metadata{
+		CanCreateFile:      NewBool(false),
+		CanCreateDirectory: NewBool(false),
+		CanUpload:          NewBool(false),
+		CanRename:          NewBool(false),
+		CanMove:            NewBool(false),
+		CanDelete:          NewBool(false),
+	}
+}
+
 func (this GroupFolders) Ls(p string) ([]os.FileInfo, error) {
 	files := []os.FileInfo{}
 	if isRoot(p) {

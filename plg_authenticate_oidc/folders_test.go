@@ -237,3 +237,24 @@ func TestRulesApplyOnNextRequest(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+func TestInterfaceOffersNoChangesToRoot(t *testing.T) {
+	fixture(t)
+	b := connect(t, "team-1").(interface{ Meta(string) Metadata })
+	root := b.Meta("/")
+	for name, allowed := range map[string]*bool{
+		"create file":      root.CanCreateFile,
+		"create directory": root.CanCreateDirectory,
+		"upload":           root.CanUpload,
+		"rename":           root.CanRename,
+		"move":             root.CanMove,
+		"delete":           root.CanDelete,
+	} {
+		if allowed == nil || *allowed {
+			t.Errorf("%s offered in root", name)
+		}
+	}
+	if inside := b.Meta("/team-1/"); inside != (Metadata{}) {
+		t.Errorf("folder restricted: %+v", inside)
+	}
+}
