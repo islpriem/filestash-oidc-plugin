@@ -171,6 +171,7 @@ To add a folder, create the directory, `chown` it to uid 1000 and add a line to 
      - Leave **Include claims in id_token** enabled.
 3. **Access (optional).** Bind the groups that may use Filestash to the application, so everyone else is turned away by Authentik.
 4. **Issuer.** Take the issuer from the provider's overview (*OpenID Configuration Issuer*). It looks like `https://auth.example.com/application/o/filestash/`.
+5. **Usernames.** Keep **Allow users to change username** turned off under **System → Settings**. Filestash tells users apart by their `preferred_username`, which keys things like file tags.
 
 **Signing out.** Signing out of Filestash doesn't end the Authentik session. Since the login page sends visitors straight to the provider, you're signed back in right away. To switch users, sign out of Authentik.
 
