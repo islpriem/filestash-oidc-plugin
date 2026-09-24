@@ -37,6 +37,10 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
     make build
 
 FROM debian:stable-slim
+LABEL org.opencontainers.image.title="filestash-oidc-plugin" \
+      org.opencontainers.image.description="Filestash with OpenID Connect sign-in and group based directories" \
+      org.opencontainers.image.source="https://github.com/islpriem/filestash-oidc-plugin" \
+      org.opencontainers.image.licenses="AGPL-3.0-only"
 WORKDIR /app/
 COPY --from=build /home/filestash/dist/ .
 RUN apt-get update > /dev/null && \
