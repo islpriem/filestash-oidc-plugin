@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -97,7 +98,7 @@ func TestForgedSessionIsRejected(t *testing.T) {
 
 func TestCallbackIsBoundToTheBrowser(t *testing.T) {
 	victim, attacker := newClient(t), newClient(t)
-	callback := authorize(t, attacker, "mallory")
+	callback := authorize(t, attacker, "mallory", nil)
 	get(t, victim, callback)
 	if hasSession(victim) {
 		t.Fatal("login forced onto another browser")
@@ -110,7 +111,7 @@ func TestCallbackIsBoundToTheBrowser(t *testing.T) {
 
 func TestTamperedStateIsRejected(t *testing.T) {
 	c := newClient(t)
-	u, _ := url.Parse(authorize(t, c, "alice"))
+	u, _ := url.Parse(authorize(t, c, "alice", nil))
 	q := u.Query()
 	q.Set("state", q.Get("state")+"x")
 	u.RawQuery = q.Encode()
@@ -122,7 +123,7 @@ func TestTamperedStateIsRejected(t *testing.T) {
 
 func TestPostedCallbackIsRejected(t *testing.T) {
 	c := newClient(t)
-	u, _ := url.Parse(authorize(t, c, "alice"))
+	u, _ := url.Parse(authorize(t, c, "alice", nil))
 	res, err := c.PostForm(filestash+"/api/session/auth/", u.Query())
 	if err != nil {
 		t.Fatal(err)
@@ -130,6 +131,22 @@ func TestPostedCallbackIsRejected(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusMethodNotAllowed || hasSession(c) {
 		t.Fatalf("status %d", res.StatusCode)
+	}
+}
+
+func TestRedirectAfterSignInStaysLocal(t *testing.T) {
+	for next, want := range map[string]string{
+		"/files/team-1/":            "/files/team-1/",
+		"https://evil.example.com/": "/",
+		"//evil.example.com/":       "/",
+	} {
+		c := newClient(t)
+		state, _ := json.Marshal(map[string]string{"next": next})
+		callback := authorize(t, c, "alice", url.Values{"state": {base64.StdEncoding.EncodeToString(state)}})
+		c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		if got := get(t, c, callback).Header.Get("Location"); got != want || !hasSession(c) {
+			t.Errorf("next %q: redirected to %q, want %q", next, got, want)
+		}
 	}
 }
 
@@ -162,9 +179,13 @@ func newClient(t *testing.T) *http.Client {
 
 // authorize signs the user in at the mock provider the way a browser would
 // and returns the callback the provider sends the browser to.
-func authorize(t *testing.T, c *http.Client, user string) string {
+func authorize(t *testing.T, c *http.Client, user string, query url.Values) string {
 	t.Helper()
-	res := get(t, c, filestash+"/api/session/auth/?action=redirect&label=Files")
+	q := url.Values{"action": {"redirect"}, "label": {"Files"}}
+	for k, v := range query {
+		q[k] = v
+	}
+	res := get(t, c, filestash+"/api/session/auth/?"+q.Encode())
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("login page: status %d at %s", res.StatusCode, res.Request.URL)
 	}
@@ -190,7 +211,7 @@ func authorize(t *testing.T, c *http.Client, user string) string {
 func signIn(t *testing.T, user string) *http.Client {
 	t.Helper()
 	c := newClient(t)
-	res := get(t, c, authorize(t, c, user))
+	res := get(t, c, authorize(t, c, user, nil))
 	if !hasSession(c) {
 		t.Fatalf("no session for %s, ended at %s", user, res.Request.URL)
 	}

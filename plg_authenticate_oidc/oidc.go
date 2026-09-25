@@ -3,7 +3,10 @@ package plg_authenticate_oidc
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -97,30 +100,55 @@ func (this OpenID) EntryPoint(idpParams map[string]string, req *http.Request, re
 	return nil
 }
 
-// bindFlow hands the flow cookie over to Callback, which doesn't get to see the
-// request. The parameter is always replaced so a link can't smuggle in a flow
-// started from another browser, and callbacks can't be posted since form
-// values would take precedence over the query.
-func bindFlow(fn HandlerFunc) HandlerFunc {
+// guardSignIn watches over the sign-in route:
+//   - when a sign-in starts, a state whose "next" leads to another site is
+//     dropped, as filestash redirects there once the user is signed in
+//   - on the way back, it hands the flow cookie over to Callback, which doesn't
+//     get to see the request. The parameter is always replaced so a link can't
+//     smuggle in a flow started from another browser, and callbacks can't be
+//     posted since form values would take precedence over the query.
+func guardSignIn(fn HandlerFunc) HandlerFunc {
 	return HandlerFunc(func(ctx *App, res http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != WithBase("/api/session/auth/") ||
-			Config.Get("middleware.identity_provider.type").String() != "oidc" ||
-			(req.Method == http.MethodGet && req.URL.Query().Get("action") == "redirect") {
+			Config.Get("middleware.identity_provider.type").String() != "oidc" {
 			fn(ctx, res, req)
 			return
 		}
-		if req.Method != http.MethodGet {
+		q := req.URL.Query()
+		if req.Method == http.MethodGet && q.Get("action") == "redirect" {
+			if !staysLocal(q.Get("state")) {
+				q.Del("state")
+			}
+		} else if req.Method == http.MethodGet {
+			q.Del(flowCookie)
+			if c, err := req.Cookie(flowCookie); err == nil {
+				q.Set(flowCookie, c.Value)
+			}
+		} else {
 			SendErrorResult(res, ErrNotValid)
 			return
-		}
-		q := req.URL.Query()
-		q.Del(flowCookie)
-		if c, err := req.Cookie(flowCookie); err == nil {
-			q.Set(flowCookie, c.Value)
 		}
 		req.URL.RawQuery = q.Encode()
 		fn(ctx, res, req)
 	})
+}
+
+// staysLocal reads the state the same way filestash does and tells whether its
+// "next" entry is a path on this site.
+func staysLocal(state string) bool {
+	b, err := base64.StdEncoding.DecodeString(state)
+	if err != nil {
+		return true
+	}
+	s := map[string]string{}
+	json.Unmarshal(b, &s)
+	next := s["next"]
+	if next == "" {
+		return true
+	}
+	u, err := url.Parse(next)
+	return err == nil && u.Scheme == "" && u.Host == "" &&
+		strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") && !strings.Contains(next, `\`)
 }
 
 // Callback never returns ErrAuthenticationFailed as filestash would send the

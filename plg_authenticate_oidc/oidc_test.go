@@ -270,7 +270,7 @@ func TestEntryPointUnreachableProvider(t *testing.T) {
 	}
 }
 
-func TestBindFlow(t *testing.T) {
+func TestGuardSignIn(t *testing.T) {
 	Config.Get("middleware.identity_provider.type").Set("oidc")
 	for _, tc := range []struct {
 		name   string
@@ -290,7 +290,7 @@ func TestBindFlow(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called, seen := false, ""
-			handler := bindFlow(func(ctx *App, res http.ResponseWriter, req *http.Request) {
+			handler := guardSignIn(func(ctx *App, res http.ResponseWriter, req *http.Request) {
 				called, seen = true, req.URL.Query().Get(flowCookie)
 			})
 			req := httptest.NewRequest(tc.method, tc.target, nil)
@@ -312,11 +312,11 @@ func TestBindFlow(t *testing.T) {
 	}
 }
 
-func TestBindFlowOnlyForOIDC(t *testing.T) {
+func TestGuardSignInOnlyForOIDC(t *testing.T) {
 	Config.Get("middleware.identity_provider.type").Set("passthrough")
 	defer Config.Get("middleware.identity_provider.type").Set("oidc")
 	called := false
-	handler := bindFlow(func(ctx *App, res http.ResponseWriter, req *http.Request) { called = true })
+	handler := guardSignIn(func(ctx *App, res http.ResponseWriter, req *http.Request) { called = true })
 	handler(&App{}, httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/session/auth/", nil))
 	if !called {
 		t.Fatal("other authentication middlewares are blocked")
@@ -438,5 +438,37 @@ func TestCallbackRejects(t *testing.T) {
 				t.Fatal("would restart the login in a loop")
 			}
 		})
+	}
+}
+
+// filestash sends the user to the "next" entry of its own state once signed
+// in, so a crafted sign-in link could otherwise end on another site.
+func TestGuardSignInKeepsRedirectsLocal(t *testing.T) {
+	Config.Get("middleware.identity_provider.type").Set("oidc")
+	encode := func(next string) string {
+		b, _ := json.Marshal(map[string]string{"next": next, "nav": "files"})
+		return base64.StdEncoding.EncodeToString(b)
+	}
+	for state, kept := range map[string]bool{
+		encode(""):                          true,
+		encode("/files/team-1/"):            true,
+		encode("/files/a b/?view=grid"):     true,
+		"not base64":                        true,
+		encode("https://evil.example.com/"): false,
+		encode("//evil.example.com/"):       false,
+		encode(`/\evil.example.com/`):       false,
+		encode("/\t/evil.example.com/"):     false,
+		encode("javascript:alert(1)"):       false,
+		encode("evil.example.com"):          false,
+	} {
+		seen := ""
+		handler := guardSignIn(func(ctx *App, res http.ResponseWriter, req *http.Request) {
+			seen = req.URL.Query().Get("state")
+		})
+		target := "/api/session/auth/?action=redirect&label=Files&state=" + url.QueryEscape(state)
+		handler(&App{}, httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
+		if (seen == state) != kept {
+			t.Errorf("state %q: kept=%v, want %v", state, seen == state, kept)
+		}
 	}
 }
