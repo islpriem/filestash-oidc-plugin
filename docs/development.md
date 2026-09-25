@@ -22,10 +22,12 @@ The plugin lives in `plg_authenticate_oidc/`. At build time it is copied into th
 | `config.go` | settings and rules |
 | `index.go` | registration and sealing of values with a key derived from the Filestash secret |
 
-## Updating Filestash
+## Updating
 
-Change `FILESTASH_COMMIT` in the [Dockerfile](../Dockerfile), then run `make test` and `make e2e`.
+[scripts/bump.sh](../scripts/bump.sh) moves the [Dockerfile](../Dockerfile) to the latest Filestash commit, go-oidc release and base image digests. Then run `make test` and `make e2e`. The Go version (`golang:1.26-trixie`) and the GitHub Actions are updated by hand.
 
 ## Releases
 
 CI runs both test suites on every push and pull request. Pushes to `main` and `v*` tags publish the tested image to `ghcr.io/islpriem/filestash-oidc-plugin`.
+
+On the first of every month, or when the workflow is started by hand on `main`, CI runs the bump script first. If the tests pass, it commits the new pins and publishes the image as `latest` and `YYYYMMDD`. If they fail, nothing is committed or published. The image is rebuilt even when no pin moved, which picks up security updates of the Debian packages.

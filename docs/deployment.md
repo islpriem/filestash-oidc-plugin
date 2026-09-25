@@ -6,9 +6,12 @@
 
 | Tag | Content |
 |---|---|
-| `latest` | the latest build of `main` |
+| `latest` | the latest tested build |
+| `YYYYMMDD` | the monthly rebuild on the latest Filestash, go-oidc and base images |
 | `sha-<commit>` | a specific commit |
 | `<version>` | a released version, if any |
+
+Filestash has no releases, so the monthly rebuild follows its main branch. Only what the tests cover is checked, so pin a date or `sha-` tag in production rather than `latest`.
 
 For other architectures, build the image yourself:
 
@@ -18,7 +21,7 @@ cd filestash-oidc-plugin
 docker build -t filestash-oidc .
 ```
 
-The Filestash version is pinned through `FILESTASH_COMMIT` in the [Dockerfile](../Dockerfile).
+The Filestash commit, go-oidc and base images are pinned in the [Dockerfile](../Dockerfile).
 
 ## Compose
 

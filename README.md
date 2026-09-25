@@ -15,7 +15,7 @@ An opinionated, simple and minimal [Filestash](https://github.com/mickael-kerjea
 docker pull ghcr.io/islpriem/filestash-oidc-plugin:latest
 ```
 
-The image is Filestash with this plugin compiled in (linux/amd64).
+The image is Filestash with this plugin compiled in (linux/amd64). It is rebuilt every month on the latest Filestash.
 
 - [Deployment](docs/deployment.md)
 - [Configuration](docs/configuration.md)
